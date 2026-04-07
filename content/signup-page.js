@@ -456,18 +456,37 @@ async function step5_fillNameBirthday(payload) {
   log(`Step 5: Name filled: ${fullName}`);
 
   let birthdayMode = false;
+  let dropdownMode = false;
+  let dropdownButtons = [];
   let ageInput = null;
 
+  function readBirthdayFieldsetButtons() {
+    const fieldset = Array.from(document.querySelectorAll('fieldset')).find((fs) => {
+      const legend = fs.querySelector('legend');
+      return legend && /birthday|date\s+of\s+birth|出生|生日/i.test(legend.textContent || '');
+    });
+    if (!fieldset) return [];
+    return Array.from(fieldset.querySelectorAll('button[aria-haspopup="listbox"]')).filter(isElementVisible);
+  }
+
   for (let i = 0; i < 100; i++) {
-    const yearSpinner = document.querySelector('[role="spinbutton"][data-type="year"]');
-    const monthSpinner = document.querySelector('[role="spinbutton"][data-type="month"]');
-    const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
-    const hiddenBirthday = document.querySelector('input[name="birthday"]');
     ageInput = document.querySelector('input[name="age"]');
 
     // Some pages include a hidden birthday input even though the real UI is "age".
     // In that case we must prioritize filling age to satisfy required validation.
     if (ageInput) break;
+
+    const birthdayButtons = readBirthdayFieldsetButtons();
+    if (birthdayButtons.length >= 3) {
+      dropdownMode = true;
+      dropdownButtons = birthdayButtons;
+      break;
+    }
+
+    const yearSpinner = document.querySelector('[role="spinbutton"][data-type="year"]');
+    const monthSpinner = document.querySelector('[role="spinbutton"][data-type="month"]');
+    const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
+    const hiddenBirthday = document.querySelector('input[name="birthday"]');
 
     if ((yearSpinner && monthSpinner && daySpinner) || hiddenBirthday) {
       birthdayMode = true;
@@ -476,7 +495,244 @@ async function step5_fillNameBirthday(payload) {
     await sleep(100);
   }
 
-  if (birthdayMode) {
+  function normalizeText(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  }
+
+  function monthTextCandidates(monthValue) {
+    const monthIndex = Number(monthValue) - 1;
+    const monthLong = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    const monthAliases = [
+      ['jan'],
+      ['feb'],
+      ['mar'],
+      ['apr'],
+      ['may'],
+      ['jun'],
+      ['jul'],
+      ['aug'],
+      ['sep', 'sept'],
+      ['oct'],
+      ['nov'],
+      ['dec'],
+    ];
+    const candidates = [
+      String(monthValue),
+      String(monthValue).padStart(2, '0'),
+      `${Number(monthValue)}月`,
+    ];
+    if (monthIndex >= 0 && monthIndex < 12) {
+      candidates.push(monthLong[monthIndex], ...monthAliases[monthIndex]);
+    }
+    return candidates.map(normalizeText);
+  }
+
+  function extractNumberishValue(text) {
+    const match = normalizeText(text).match(/^(\d{1,4})(?:\s*(?:月|日|号|年))?$/);
+    return match ? Number(match[1]) : Number.NaN;
+  }
+
+  async function waitForVisibleListbox(button, timeout = 3000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      throwIfStopped();
+
+      const controlsId = button.getAttribute('aria-controls');
+      if (controlsId) {
+        const controlled = document.getElementById(controlsId);
+        if (controlled && controlled.getAttribute('role') === 'listbox' && isElementVisible(controlled)) {
+          return controlled;
+        }
+      }
+
+      const visibleListboxes = Array.from(document.querySelectorAll('[role="listbox"]'))
+        .filter((el) => isElementVisible(el) && el.querySelector('[role="option"]'));
+      if (visibleListboxes.length === 1) {
+        return visibleListboxes[0];
+      }
+
+      const labelledBy = button.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const match = visibleListboxes.find((listbox) => {
+          const popupLabel = normalizeText(listbox.getAttribute('aria-labelledby') || '');
+          return popupLabel && popupLabel === normalizeText(labelledBy);
+        });
+        if (match) return match;
+      }
+
+      await sleep(100);
+    }
+
+    throw new Error('Timeout waiting for birthday dropdown listbox. URL: ' + location.href);
+  }
+
+  function detectDropdownKindFromLabel(button) {
+    const labelledIds = (button.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .filter(Boolean);
+    const labelledText = labelledIds
+      .map((id) => document.getElementById(id)?.textContent || '')
+      .join(' ');
+    const nearbyText = [
+      button.getAttribute('aria-label') || '',
+      labelledText,
+      button.previousElementSibling?.textContent || '',
+    ].join(' ');
+    const normalized = normalizeText(nearbyText);
+    if (/(^| )year( |$)|年份|年(?!龄)/i.test(normalized)) return 'year';
+    if (/(^| )month( |$)|月份|月/i.test(normalized)) return 'month';
+    if (/(^| )day( |$)|日期|日/i.test(normalized)) return 'day';
+    return null;
+  }
+
+  function detectDropdownKindFromOptions(options) {
+    const optionValues = options
+      .map((opt) => normalizeText(opt.getAttribute('data-key') || opt.textContent || ''))
+      .filter(Boolean);
+    if (!optionValues.length) return null;
+
+    if (optionValues.some((value) => /^(19|20)\d{2}(?:年)?$/.test(value))) {
+      return 'year';
+    }
+
+    if (optionValues.some((value) => /^(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)$/.test(value))) {
+      return 'month';
+    }
+
+    if (optionValues.some((value) => /^\d{1,2}\s*月$/.test(value))) {
+      return 'month';
+    }
+
+    if (optionValues.some((value) => /^\d{1,2}\s*(?:日|号)$/.test(value))) {
+      return 'day';
+    }
+
+    const numericValues = optionValues
+      .map((value) => extractNumberishValue(value))
+      .filter((value) => !Number.isNaN(value));
+
+    if (numericValues.length === optionValues.length && numericValues.length) {
+      const min = Math.min(...numericValues);
+      const max = Math.max(...numericValues);
+      if (min >= 1 && max <= 12 && optionValues.length <= 12) return 'month';
+      if (min >= 1 && max <= 31 && optionValues.length >= 28) return 'day';
+    }
+
+    return null;
+  }
+
+  async function inferDropdownKind(button) {
+    const labeledKind = detectDropdownKindFromLabel(button);
+    if (labeledKind) return labeledKind;
+
+    simulateClick(button);
+    await sleep(250);
+    const listbox = await waitForVisibleListbox(button);
+    const options = Array.from(listbox.querySelectorAll('[role="option"]'));
+    const detectedKind = detectDropdownKindFromOptions(options);
+    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    await sleep(150);
+    return detectedKind;
+  }
+
+  async function mapBirthdayButtons(buttons) {
+    const mapping = {};
+    for (const button of buttons) {
+      const kind = await inferDropdownKind(button);
+      if (kind && !mapping[kind]) {
+        mapping[kind] = button;
+      }
+    }
+    return mapping;
+  }
+
+  function optionMatchesValue(option, kind, value) {
+    const optionKey = normalizeText(option.getAttribute('data-key') || '');
+    const optionText = normalizeText(option.textContent || '');
+    const numericValue = Number(value);
+
+    if (kind === 'year') {
+      return optionKey === String(value) || optionText === String(value) || extractNumberishValue(optionKey) === numericValue || extractNumberishValue(optionText) === numericValue;
+    }
+
+    if (kind === 'month') {
+      const monthCandidates = new Set(monthTextCandidates(value));
+      if (monthCandidates.has(optionKey) || monthCandidates.has(optionText)) return true;
+    }
+
+    if (kind === 'day' || kind === 'month') {
+      if (extractNumberishValue(optionKey) === numericValue || extractNumberishValue(optionText) === numericValue) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function selectDropdownOption(button, kind, value) {
+    simulateClick(button);
+    await sleep(250);
+    const listbox = await waitForVisibleListbox(button);
+    await sleep(100);
+
+    const options = Array.from(listbox.querySelectorAll('[role="option"]'));
+    const target = options.find((option) => optionMatchesValue(option, kind, value));
+    if (!target) {
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      throw new Error(`Could not find ${kind} dropdown option for value "${value}".`);
+    }
+
+    await humanPause(150, 350);
+    simulateClick(target);
+    await sleep(300);
+  }
+
+  let dropdownFilled = false;
+  if (dropdownMode) {
+    if (!hasBirthdayData) {
+      throw new Error('Birthday dropdowns detected, but no birthday data provided.');
+    }
+
+    try {
+      log('Step 5: Birthday dropdowns detected, filling birthday...');
+      const birthdayButtonsByKind = await mapBirthdayButtons(dropdownButtons);
+      const yearButton = birthdayButtonsByKind.year;
+      const monthButton = birthdayButtonsByKind.month;
+      const dayButton = birthdayButtonsByKind.day;
+
+      if (!yearButton || !monthButton || !dayButton) {
+        throw new Error('Could not map birthday dropdowns to year/month/day fields.');
+      }
+
+      await humanPause(450, 1100);
+      await selectDropdownOption(yearButton, 'year', year);
+      await humanPause(250, 650);
+      await selectDropdownOption(monthButton, 'month', month);
+      await humanPause(250, 650);
+      await selectDropdownOption(dayButton, 'day', day);
+      log(`Step 5: Birthday filled: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+
+      const hiddenBirthday = document.querySelector('input[name="birthday"]');
+      if (hiddenBirthday) {
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        fillInput(hiddenBirthday, dateStr);
+        log(`Step 5: Hidden birthday input synced: ${dateStr}`);
+      }
+      dropdownFilled = true;
+    } catch (err) {
+      log(`Step 5: Birthday dropdown fill failed, falling back. ${err.message}`, 'warn');
+      const yearSpinner = document.querySelector('[role="spinbutton"][data-type="year"]');
+      const monthSpinner = document.querySelector('[role="spinbutton"][data-type="month"]');
+      const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
+      const hiddenBirthday = document.querySelector('input[name="birthday"]');
+      birthdayMode = Boolean((yearSpinner && monthSpinner && daySpinner) || hiddenBirthday);
+    }
+  }
+
+  if (!dropdownFilled && birthdayMode) {
     if (!hasBirthdayData) {
       throw new Error('Birthday field detected, but no birthday data provided.');
     }
@@ -486,25 +742,25 @@ async function step5_fillNameBirthday(payload) {
     const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
 
     if (yearSpinner && monthSpinner && daySpinner) {
-      log('Step 5: Birthday fields detected, filling birthday...');
+      log('Step 5: Birthday spin buttons detected, filling birthday...');
 
       async function setSpinButton(el, value) {
+        simulateClick(el);
+        await sleep(200);
         el.focus();
-        await sleep(100);
-        document.execCommand('selectAll', false, null);
-        await sleep(50);
+        await sleep(150);
 
         const valueStr = String(value);
         for (const char of valueStr) {
           el.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: `Digit${char}`, bubbles: true }));
-          el.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: `Digit${char}`, bubbles: true }));
-          el.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: char, bubbles: true }));
-          el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true }));
           await sleep(50);
+          el.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: `Digit${char}`, bubbles: true }));
+          await sleep(50);
+          el.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: `Digit${char}`, bubbles: true }));
+          await sleep(80);
         }
 
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', code: 'Tab', bubbles: true }));
-        el.blur();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true }));
         await sleep(100);
       }
 
@@ -520,8 +776,7 @@ async function step5_fillNameBirthday(payload) {
     const hiddenBirthday = document.querySelector('input[name="birthday"]');
     if (hiddenBirthday) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      hiddenBirthday.value = dateStr;
-      hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
+      fillInput(hiddenBirthday, dateStr);
       log(`Step 5: Hidden birthday input set: ${dateStr}`);
     }
   } else if (ageInput) {
@@ -537,8 +792,7 @@ async function step5_fillNameBirthday(payload) {
     const hiddenBirthday = document.querySelector('input[name="birthday"]');
     if (hiddenBirthday && hasBirthdayData) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      hiddenBirthday.value = dateStr;
-      hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
+      fillInput(hiddenBirthday, dateStr);
       log(`Step 5: Hidden birthday input set (age mode): ${dateStr}`);
     }
   } else {
