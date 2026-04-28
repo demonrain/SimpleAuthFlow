@@ -2,7 +2,7 @@
 
 importScripts('data/names.js');
 
-const LOG_PREFIX = '[SimpleAuthFlow:bg]';
+const LOG_PREFIX = '[DemonrainRegFlow:bg]';
 const BURNER_MAILBOX_URL = 'https://burnermailbox.com/mailbox';
 const BURNER_CHALLENGE_REQUIRED_MESSAGE = 'Burner Mailbox security verification required.';
 const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
@@ -26,6 +26,7 @@ const DEFAULT_STATE = {
   autoRunTotalRuns: 1,
   oauthUrl: null,
   email: null,
+  mailMode: 'burner',
   password: null,
   accounts: [], // { email, password, createdAt }
   lastEmailTimestamp: null,
@@ -36,6 +37,8 @@ const DEFAULT_STATE = {
   logs: [],
   vpsUrl: '',
   customPassword: '',
+  manualVerificationCodes: {},
+  pendingManualCodeStep: null,
 };
 
 async function getState() {
@@ -78,6 +81,40 @@ async function setPasswordState(password) {
   broadcastDataUpdate({ password });
 }
 
+function normalizeManualVerificationCode(value) {
+  return String(value || '').replace(/\D/g, '').slice(0, 6);
+}
+
+function isManualMailMode(state) {
+  return (state.mailMode || 'burner') === 'manual';
+}
+
+async function saveManualVerificationCode(step, code) {
+  const normalized = normalizeManualVerificationCode(code);
+  if (!/^\d{6}$/.test(normalized)) {
+    throw new Error('Manual verification code must be 6 digits.');
+  }
+
+  const state = await getState();
+  const manualVerificationCodes = { ...(state.manualVerificationCodes || {}) };
+  manualVerificationCodes[step] = normalized;
+  await setState({ manualVerificationCodes });
+  return normalized;
+}
+
+async function takeManualVerificationCode(step) {
+  const state = await getState();
+  const manualVerificationCodes = { ...(state.manualVerificationCodes || {}) };
+  const code = normalizeManualVerificationCode(manualVerificationCodes[step]);
+  if (!/^\d{6}$/.test(code)) {
+    return null;
+  }
+
+  delete manualVerificationCodes[step];
+  await setState({ manualVerificationCodes, pendingManualCodeStep: null });
+  return code;
+}
+
 async function resetState() {
   console.log(LOG_PREFIX, 'Resetting all state');
   // Preserve settings and persistent data across resets
@@ -89,6 +126,7 @@ async function resetState() {
     'tabRegistry',
     'vpsUrl',
     'customPassword',
+    'mailMode',
   ]);
   await chrome.storage.session.clear();
   await chrome.storage.session.set({
@@ -100,6 +138,9 @@ async function resetState() {
     tabRegistry: prev.tabRegistry || {},
     vpsUrl: prev.vpsUrl || '',
     customPassword: prev.customPassword || '',
+    mailMode: prev.mailMode || 'burner',
+    manualVerificationCodes: {},
+    pendingManualCodeStep: null,
   });
 }
 
@@ -590,6 +631,9 @@ async function handleMessage(message, sender) {
       if (message.payload.email) {
         await setEmailState(message.payload.email);
       }
+      if (message.payload.manualCode && [4, 7].includes(Number(step))) {
+        await saveManualVerificationCode(Number(step), message.payload.manualCode);
+      }
       await executeStep(step);
       return { ok: true };
     }
@@ -618,6 +662,13 @@ async function handleMessage(message, sender) {
       if (message.payload.email) {
         await setEmailState(message.payload.email);
       }
+      if (message.payload.manualCode) {
+        const state = await getState();
+        const step = Number(message.payload.step || state.pendingManualCodeStep || state.currentStep);
+        if ([4, 7].includes(step)) {
+          await saveManualVerificationCode(step, message.payload.manualCode);
+        }
+      }
       resumeAutoRun();  // fire-and-forget
       return { ok: true };
     }
@@ -626,8 +677,24 @@ async function handleMessage(message, sender) {
       const updates = {};
       if (message.payload.vpsUrl !== undefined) updates.vpsUrl = message.payload.vpsUrl;
       if (message.payload.customPassword !== undefined) updates.customPassword = message.payload.customPassword;
+      if (message.payload.mailMode !== undefined) {
+        updates.mailMode = message.payload.mailMode === 'manual' ? 'manual' : 'burner';
+      }
       await setState(updates);
       return { ok: true };
+    }
+
+    case 'SUBMIT_MANUAL_CODE': {
+      clearStopRequest();
+      const state = await getState();
+      const requestedStep = Number(message.payload.step || state.pendingManualCodeStep || state.currentStep);
+      const step = [4, 7].includes(requestedStep) ? requestedStep : 4;
+      const code = await saveManualVerificationCode(step, message.payload.code);
+      await addLog(`Step ${step}: Manual verification code received`, 'ok');
+      if (state.pendingManualCodeStep === step && autoRunResumeMode === 'manual_code') {
+        resumeAutoRun();  // fire-and-forget
+      }
+      return { ok: true, step, code };
     }
 
     // Side panel data updates
@@ -758,7 +825,7 @@ async function requestStop() {
 
   await markRunningStepsStopped();
   autoRunActive = false;
-  await setState({ autoRunning: false });
+  await setState({ autoRunning: false, pendingManualCodeStep: null });
   chrome.runtime.sendMessage({
     type: 'AUTO_RUN_STATUS',
     payload: { phase: 'stopped', currentRun: autoRunCurrentRun, totalRuns: autoRunTotalRuns },
@@ -816,7 +883,8 @@ async function executeStep(step) {
  */
 async function executeStepAndWait(step, delayAfter = 2000) {
   throwIfStopped();
-  const promise = waitForStepComplete(step, 120000);
+  const waitTimeout = [4, 7].includes(step) ? 15 * 60 * 1000 : 120000;
+  const promise = waitForStepComplete(step, waitTimeout);
   await executeStep(step);
   await promise;
   // Extra delay for page transitions / DOM updates
@@ -1216,6 +1284,7 @@ async function prepareStateForFreshAutoRun(run) {
   const keepSettings = {
     vpsUrl: prevState.vpsUrl,
     customPassword: prevState.customPassword,
+    mailMode: prevState.mailMode || 'burner',
     autoRunning: true,
     autoRunCurrentRun: run,
     autoRunTotalRuns,
@@ -1227,6 +1296,31 @@ async function prepareStateForFreshAutoRun(run) {
 }
 
 async function ensureAutoRunEmail(run, totalRuns) {
+  const initialState = await getState();
+  if (initialState.email) {
+    return true;
+  }
+
+  if (isManualMailMode(initialState)) {
+    await addLog(`=== Run ${run}/${totalRuns} PAUSED: Paste manual email, then continue ===`, 'warn');
+    autoRunResumeMode = 'email';
+    chrome.runtime.sendMessage({
+      type: 'AUTO_RUN_STATUS',
+      payload: { phase: 'waiting_email', currentRun: run, totalRuns },
+    }).catch(() => {});
+
+    await waitForResume();
+
+    const resumedState = await getState();
+    if (!resumedState.email) {
+      await addLog('Cannot resume: no email address.', 'error');
+      return false;
+    }
+
+    autoRunResumeMode = null;
+    return true;
+  }
+
   let emailReady = false;
 
   while (!emailReady) {
@@ -1359,7 +1453,12 @@ async function autoRunLoop(totalRuns, options = {}) {
     chrome.runtime.sendMessage({ type: 'AUTO_RUN_STATUS', payload: { phase: 'stopped', currentRun: completedRuns, totalRuns: autoRunTotalRuns } }).catch(() => {});
   }
   autoRunActive = false;
-  await setState({ autoRunning: false, autoRunCurrentRun: autoRunCurrentRun, autoRunTotalRuns: autoRunTotalRuns });
+  await setState({
+    autoRunning: false,
+    autoRunCurrentRun: autoRunCurrentRun,
+    autoRunTotalRuns: autoRunTotalRuns,
+    pendingManualCodeStep: null,
+  });
   clearStopRequest();
 }
 
@@ -1379,11 +1478,49 @@ async function resumeAutoRun() {
       return;
     }
   }
+  if (autoRunResumeMode === 'manual_code') {
+    const state = await getState();
+    const step = Number(state.pendingManualCodeStep);
+    if (![4, 7].includes(step) || !normalizeManualVerificationCode(state.manualVerificationCodes?.[step])) {
+      await addLog('Cannot resume: no manual verification code has been submitted yet.', 'error');
+      return;
+    }
+  }
   if (resumeWaiter) {
     resumeWaiter.resolve();
     resumeWaiter = null;
     autoRunResumeMode = null;
   }
+}
+
+async function waitForManualVerificationCode(step) {
+  const existingCode = await takeManualVerificationCode(step);
+  if (existingCode) {
+    await addLog(`Step ${step}: Using submitted manual verification code`, 'ok');
+    return existingCode;
+  }
+
+  await addLog(`Step ${step}: Waiting for manual verification code from Side Panel...`, 'warn');
+  autoRunResumeMode = 'manual_code';
+  await setState({ pendingManualCodeStep: step });
+  chrome.runtime.sendMessage({
+    type: 'AUTO_RUN_STATUS',
+    payload: {
+      phase: 'waiting_manual_code',
+      currentRun: Math.max(1, autoRunCurrentRun || 1),
+      totalRuns: Math.max(1, autoRunTotalRuns || 1),
+      step,
+    },
+  }).catch(() => {});
+
+  await waitForResume();
+
+  const code = await takeManualVerificationCode(step);
+  if (!code) {
+    throw new Error(`Step ${step}: Manual verification code was not submitted.`);
+  }
+  await addLog(`Step ${step}: Manual verification code received`, 'ok');
+  return code;
 }
 
 // ============================================================
@@ -1590,7 +1727,28 @@ async function pollVerificationCodeWithRetry(step, state, options) {
   throw new Error(failureLabel);
 }
 
+async function fillVerificationCodeOnAuthPage(step, code) {
+  const signupTabId = await getTabId('signup-page');
+  if (signupTabId) {
+    await chrome.tabs.update(signupTabId, { active: true });
+    await sendToContentScript('signup-page', {
+      type: 'FILL_CODE',
+      step,
+      source: 'background',
+      payload: { code },
+    });
+  } else {
+    throw new Error('Auth page tab was closed. Cannot fill verification code.');
+  }
+}
+
 async function executeStep4(state) {
+  if (isManualMailMode(state)) {
+    const code = await waitForManualVerificationCode(4);
+    await fillVerificationCodeOnAuthPage(4, code);
+    return;
+  }
+
   const code = await pollVerificationCodeWithRetry(4, state, {
     filterAfterTimestamp: state.flowStartTime || 0,
     senderFilters: ['openai', 'noreply', 'verify', 'auth', 'chatgpt'],
@@ -1662,6 +1820,12 @@ async function executeStep6(state) {
 // ============================================================
 
 async function executeStep7(state) {
+  if (isManualMailMode(state)) {
+    const code = await waitForManualVerificationCode(7);
+    await fillVerificationCodeOnAuthPage(7, code);
+    return;
+  }
+
   const code = await pollVerificationCodeWithRetry(7, state, {
     filterAfterTimestamp: state.lastEmailTimestamp || state.flowStartTime || 0,
     senderFilters: ['openai', 'noreply', 'verify', 'auth', 'chatgpt'],

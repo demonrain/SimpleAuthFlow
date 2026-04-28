@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SimpleAuthFlow</title>
+  <title>DemonrainRegFlow</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -15,23 +15,24 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
       </svg>
-      <h1>SimpleAuthFlow</h1>
+      <h1>DemonrainRegFlow</h1>
     </div>
     <div class="header-btns">
       <div class="run-group">
-        <input type="number" id="input-run-count" class="run-count-input" value="1" min="1" max="50" title="Number of runs" />
-        <button id="btn-auto-run" class="btn btn-success" title="Run all steps automatically">
+        <input type="number" id="input-run-count" class="run-count-input" value="1" min="1" max="50" title="Number of runs" data-i18n-title="runCountTitle" />
+        <button id="btn-auto-run" class="btn btn-success" title="Run all steps automatically" data-i18n-title="autoRunTitle">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          Auto
+          <span data-i18n="auto">Auto</span>
         </button>
-        <button id="btn-stop" class="btn btn-danger" title="Stop current flow" disabled>Stop</button>
+        <button id="btn-stop" class="btn btn-danger" title="Stop current flow" data-i18n-title="stopTitle" data-i18n="stop" disabled>Stop</button>
       </div>
-      <button id="btn-reset" class="btn btn-ghost" title="Reset all steps">
+      <button id="btn-reset" class="btn btn-ghost" title="Reset all steps" data-i18n-title="resetTitle">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
         </svg>
       </button>
-      <button id="btn-theme" class="theme-toggle" title="Toggle theme">
+      <button id="btn-language" class="language-toggle" title="Switch language" data-i18n-title="languageTitle">EN</button>
+      <button id="btn-theme" class="theme-toggle" title="Toggle theme" data-i18n-title="themeTitle">
         <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
         </svg>
@@ -45,7 +46,7 @@
   <section id="data-section">
     <div class="data-card">
       <div class="data-row">
-        <span class="data-label">VPS</span>
+        <span class="data-label" data-i18n="labelVps">VPS</span>
         <div class="data-inline">
           <input type="text" id="input-vps-url" class="data-input" value="http://127.0.0.1:5173/#/oauth" />
           <button id="btn-toggle-vps" class="btn btn-outline btn-sm btn-icon" type="button" title="Hide VPS URL" aria-label="Hide VPS URL">
@@ -63,95 +64,105 @@
         </div>
       </div>
       <div class="data-row">
-        <span class="data-label">Mail</span>
-        <span class="data-value">Burner Mailbox</span>
+        <span class="data-label" data-i18n="labelMail">Mail</span>
+        <select id="input-mail-mode" class="data-select" title="Email source" data-i18n-title="mailModeTitle">
+          <option value="burner" data-i18n="mailModeBurner">Burner Mailbox</option>
+          <option value="manual" data-i18n="mailModeManual">Manual Email</option>
+        </select>
       </div>
       <div class="data-row">
-        <span class="data-label">Email</span>
+        <span class="data-label" data-i18n="labelEmail">Email</span>
         <div class="data-inline">
-          <input type="text" id="input-email" class="data-input" placeholder="Auto fetch from Burner Mailbox or paste manually" />
-          <button id="btn-fetch-email" class="btn btn-outline btn-sm" type="button">Auto</button>
+          <input type="text" id="input-email" class="data-input" placeholder="Auto fetch from Burner Mailbox or paste manually" data-i18n-placeholder="emailPlaceholder" />
+          <button id="btn-fetch-email" class="btn btn-outline btn-sm" type="button" data-i18n="auto">Auto</button>
         </div>
       </div>
       <div class="data-row">
-        <span class="data-label">Password</span>
+        <span class="data-label" data-i18n="labelPassword">Account PW</span>
         <div class="data-inline">
-          <input type="password" id="input-password" class="data-input" placeholder="Leave blank to auto-generate" />
-          <button id="btn-toggle-password" class="btn btn-outline btn-sm" type="button">Show</button>
+          <input type="password" id="input-password" class="data-input" placeholder="Leave blank to auto-generate" data-i18n-placeholder="passwordPlaceholder" />
+          <button id="btn-toggle-password" class="btn btn-outline btn-sm" type="button" data-i18n="show">Show</button>
+        </div>
+      </div>
+      <div class="data-row" id="manual-code-row">
+        <span class="data-label" data-i18n="labelCode">Code</span>
+        <div class="data-inline">
+          <input type="text" id="input-manual-code" class="data-input" inputmode="numeric" maxlength="6" placeholder="Enter verification code" data-i18n-placeholder="manualCodePlaceholder" />
+          <button id="btn-submit-code" class="btn btn-primary btn-sm" type="button" data-i18n="submitCode">Submit</button>
         </div>
       </div>
       <div class="data-row">
-        <span class="data-label">OAuth</span>
-        <span id="display-oauth-url" class="data-value mono truncate">Waiting...</span>
+        <span class="data-label" data-i18n="labelOauth">OAuth</span>
+        <span id="display-oauth-url" class="data-value mono truncate" data-i18n="waiting">Waiting...</span>
       </div>
       <div class="data-row">
-        <span class="data-label">Callback</span>
-        <span id="display-localhost-url" class="data-value mono truncate">Waiting...</span>
+        <span class="data-label" data-i18n="labelCallback">Callback</span>
+        <span id="display-localhost-url" class="data-value mono truncate" data-i18n="waiting">Waiting...</span>
       </div>
     </div>
     <div id="status-bar" class="status-bar">
       <div class="status-dot"></div>
-      <span id="display-status">Ready</span>
+      <span id="display-status" data-i18n="ready">Ready</span>
     </div>
     <div id="auto-continue-bar" class="auto-continue-bar" style="display:none;">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      <span id="auto-continue-hint" class="auto-hint">Use Auto to fetch a Burner Mailbox email, or paste manually, then continue</span>
-      <button id="btn-auto-continue" class="btn btn-primary btn-sm">Continue</button>
+      <span id="auto-continue-hint" class="auto-hint" data-i18n="emailWaitHint">Use Auto to fetch a Burner Mailbox email, or paste manually, then continue</span>
+      <button id="btn-auto-continue" class="btn btn-primary btn-sm" data-i18n="continue">Continue</button>
     </div>
   </section>
 
   <section id="steps-section">
     <div class="steps-header">
       <div class="steps-title-group">
-        <span class="section-label">Workflow</span>
-        <button id="btn-workflow-continue" class="btn btn-workflow-continue btn-xs" type="button" title="Continue from interrupted step" disabled>Continue</button>
+        <span class="section-label" data-i18n="workflow">Workflow</span>
+        <button id="btn-workflow-continue" class="btn btn-workflow-continue btn-xs" type="button" title="Continue from interrupted step" data-i18n-title="workflowContinueTitle" data-i18n="continue" disabled>Continue</button>
       </div>
       <span id="steps-progress" class="steps-progress">0 / 9</span>
     </div>
     <div class="steps-list">
       <div class="step-row" data-step="1">
         <div class="step-indicator" data-step="1"><span class="step-num">1</span></div>
-        <button class="step-btn" data-step="1">Get OAuth Link</button>
+        <button class="step-btn" data-step="1" data-i18n="step1">Get OAuth Link</button>
         <span class="step-status" data-step="1"></span>
       </div>
       <div class="step-row" data-step="2">
         <div class="step-indicator" data-step="2"><span class="step-num">2</span></div>
-        <button class="step-btn" data-step="2">Open Signup</button>
+        <button class="step-btn" data-step="2" data-i18n="step2">Open Signup</button>
         <span class="step-status" data-step="2"></span>
       </div>
       <div class="step-row" data-step="3">
         <div class="step-indicator" data-step="3"><span class="step-num">3</span></div>
-        <button class="step-btn" data-step="3">Fill Email / Password</button>
+        <button class="step-btn" data-step="3" data-i18n="step3">Fill Email / Password</button>
         <span class="step-status" data-step="3"></span>
       </div>
       <div class="step-row" data-step="4">
         <div class="step-indicator" data-step="4"><span class="step-num">4</span></div>
-        <button class="step-btn" data-step="4">Get Signup Code</button>
+        <button class="step-btn" data-step="4" data-i18n="step4">Get Signup Code</button>
         <span class="step-status" data-step="4"></span>
       </div>
       <div class="step-row" data-step="5">
         <div class="step-indicator" data-step="5"><span class="step-num">5</span></div>
-        <button class="step-btn" data-step="5">Fill Name / Birthday</button>
+        <button class="step-btn" data-step="5" data-i18n="step5">Fill Name / Birthday</button>
         <span class="step-status" data-step="5"></span>
       </div>
       <div class="step-row" data-step="6">
         <div class="step-indicator" data-step="6"><span class="step-num">6</span></div>
-        <button class="step-btn" data-step="6">Login via OAuth</button>
+        <button class="step-btn" data-step="6" data-i18n="step6">Login via OAuth</button>
         <span class="step-status" data-step="6"></span>
       </div>
       <div class="step-row" data-step="7">
         <div class="step-indicator" data-step="7"><span class="step-num">7</span></div>
-        <button class="step-btn" data-step="7">Get Login Code</button>
+        <button class="step-btn" data-step="7" data-i18n="step7">Get Login Code</button>
         <span class="step-status" data-step="7"></span>
       </div>
       <div class="step-row" data-step="8">
         <div class="step-indicator" data-step="8"><span class="step-num">8</span></div>
-        <button class="step-btn" data-step="8">OAuth Auto Confirm</button>
+        <button class="step-btn" data-step="8" data-i18n="step8">OAuth Auto Confirm</button>
         <span class="step-status" data-step="8"></span>
       </div>
       <div class="step-row" data-step="9">
         <div class="step-indicator" data-step="9"><span class="step-num">9</span></div>
-        <button class="step-btn" data-step="9">VPS Verify</button>
+        <button class="step-btn" data-step="9" data-i18n="step9">VPS Verify</button>
         <span class="step-status" data-step="9"></span>
       </div>
     </div>
@@ -159,8 +170,8 @@
 
   <section id="log-section">
     <div class="log-header">
-      <span class="section-label">Console</span>
-      <button id="btn-clear-log" class="btn btn-ghost btn-xs" title="Clear log">Clear</button>
+      <span class="section-label" data-i18n="console">Console</span>
+      <button id="btn-clear-log" class="btn btn-ghost btn-xs" title="Clear log" data-i18n-title="clearLogTitle" data-i18n="clear">Clear</button>
     </div>
     <div id="log-area"></div>
   </section>
