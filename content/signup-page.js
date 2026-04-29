@@ -3,9 +3,11 @@
 
 console.log('[SimpleAuthFlow:signup-page] Content script loaded on', location.href);
 
+let preparedSignupButton = null;
+
 // Listen for commands from Background
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'EXECUTE_STEP' || message.type === 'FILL_CODE' || message.type === 'STEP8_FIND_AND_CLICK' || message.type === 'RESEND_VERIFICATION_EMAIL') {
+  if (message.type === 'EXECUTE_STEP' || message.type === 'FILL_CODE' || message.type === 'STEP8_FIND_AND_CLICK' || message.type === 'RESEND_VERIFICATION_EMAIL' || message.type === 'CLICK_PREPARED_SIGNUP') {
     resetStopState();
     handleCommand(message).then((result) => {
       sendResponse({ ok: true, ...(result || {}) });
@@ -16,10 +18,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      if (message.type === 'STEP8_FIND_AND_CLICK' || message.type === 'RESEND_VERIFICATION_EMAIL') {
+      if (message.type === 'STEP8_FIND_AND_CLICK' || message.type === 'RESEND_VERIFICATION_EMAIL' || message.type === 'CLICK_PREPARED_SIGNUP') {
         const actionLabel = message.type === 'RESEND_VERIFICATION_EMAIL'
           ? `Step ${message.step}: ${err.message}`
-          : `Step 8: ${err.message}`;
+          : (message.type === 'CLICK_PREPARED_SIGNUP'
+            ? `Step 1: ${err.message}`
+            : `Step 8: ${err.message}`);
         log(actionLabel, 'error');
         sendResponse({ error: err.message });
         return;
@@ -36,9 +40,10 @@ async function handleCommand(message) {
   switch (message.type) {
     case 'EXECUTE_STEP':
       switch (message.step) {
-        case 2: return await step2_clickRegister();
-        case 3: return await step3_fillEmailPassword(message.payload);
-        case 5: return await step5_fillNameBirthday(message.payload);
+        case 1: return await step1_clickFreeSignup();
+        case 2: return await step2_fillEmailPassword(message.payload);
+        case 4: return await step4_fillNameAge(message.payload);
+        case 5: return await step4_fillNameAge({ ...(message.payload || {}), step: 5 });
         case 6: return await step6_login(message.payload);
         case 8: return await step8_findAndClick();
         default: throw new Error(`signup-page.js does not handle step ${message.step}`);
@@ -50,22 +55,24 @@ async function handleCommand(message) {
       return await step8_findAndClick();
     case 'RESEND_VERIFICATION_EMAIL':
       return await resendVerificationEmail(message.step, message.payload);
+    case 'CLICK_PREPARED_SIGNUP':
+      return await clickPreparedSignupButton();
   }
 }
 
 // ============================================================
-// Step 2: Click Register
+// Step 1: Click ChatGPT free signup
 // ============================================================
 
-async function step2_clickRegister() {
-  log('Step 2: Looking for Register/Sign up button...');
+async function step1_clickFreeSignup() {
+  log('Step 1: Looking for ChatGPT free signup button...');
 
   let registerBtn = null;
   try {
     registerBtn = await waitForElementByText(
       'a, button, [role="button"], [role="link"]',
-      /sign\s*up|register|create\s*account|注册/i,
-      10000
+      /免费注册|註冊|注册|sign\s*up|register|create\s*account/i,
+      20000
     );
   } catch {
     // Some pages may have a direct link
@@ -80,20 +87,43 @@ async function step2_clickRegister() {
   }
 
   await humanPause(450, 1200);
-  reportComplete(2);
-  simulateClick(registerBtn);
-  log('Step 2: Clicked Register button');
+  registerBtn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  registerBtn.focus?.({ preventScroll: true });
+  await sleep(250);
+
+  const rect = getSerializableRect(registerBtn);
+  const buttonText = (registerBtn.textContent || registerBtn.getAttribute('aria-label') || '').trim();
+  const href = registerBtn.href || registerBtn.getAttribute('href') || '';
+  preparedSignupButton = registerBtn;
+  log(`Step 1: Found free signup button "${buttonText || href || registerBtn.tagName}", ready to click`);
+
+  return {
+    rect,
+    buttonText,
+    href,
+    url: location.href,
+  };
+}
+
+async function clickPreparedSignupButton() {
+  if (!preparedSignupButton || !document.documentElement.contains(preparedSignupButton)) {
+    throw new Error('Prepared free signup button is no longer available.');
+  }
+  log('Step 1: Fallback in-page click on free signup button...');
+  simulateClick(preparedSignupButton);
+  return { clicked: true, url: location.href };
 }
 
 // ============================================================
-// Step 3: Fill Email & Password
+// Step 2: Fill Email & Password
 // ============================================================
 
-async function step3_fillEmailPassword(payload) {
+async function step2_fillEmailPassword(payload) {
   const { email } = payload;
+  const step = Number(payload.step || 2);
   if (!email) throw new Error('No email provided. Paste email in Side Panel first.');
 
-  log(`Step 3: Filling email: ${email}`);
+  log(`Step ${step}: Filling email: ${email}`);
 
   // Find email input
   let emailInput = null;
@@ -108,21 +138,21 @@ async function step3_fillEmailPassword(payload) {
 
   await humanPause(500, 1400);
   fillInput(emailInput, email);
-  log('Step 3: Email filled');
+  log(`Step ${step}: Email filled`);
 
   // Check if password field is on the same page
   let passwordInput = document.querySelector('input[type="password"]');
 
   if (!passwordInput) {
     // Need to submit email first to get to password page
-    log('Step 3: No password field yet, submitting email first...');
+    log(`Step ${step}: No password field yet, submitting email first...`);
     const submitBtn = document.querySelector('button[type="submit"]')
       || await waitForElementByText('button', /continue|next|submit|继续|下一步/i, 5000).catch(() => null);
 
     if (submitBtn) {
       await humanPause(400, 1100);
       simulateClick(submitBtn);
-      log('Step 3: Submitted email, waiting for password field...');
+      log(`Step ${step}: Submitted email, waiting for password field...`);
       await sleep(2000);
     }
 
@@ -133,24 +163,24 @@ async function step3_fillEmailPassword(payload) {
     }
   }
 
-  if (!payload.password) throw new Error('No password provided. Step 3 requires a generated password.');
+  if (!payload.password) throw new Error(`No password provided. Step ${step} requires a password.`);
   await humanPause(600, 1500);
   fillInput(passwordInput, payload.password);
-  log('Step 3: Password filled');
+  log(`Step ${step}: Password filled`);
 
   // Report complete BEFORE submit, because submit causes page navigation
   // which kills the content script connection
-  reportComplete(3, { email });
+  reportComplete(step, { email });
 
   // Submit the form (page will navigate away after this)
   await sleep(500);
   const submitBtn = document.querySelector('button[type="submit"]')
-    || await waitForElementByText('button', /continue|sign\s*up|submit|注册|创建|create/i, 5000).catch(() => null);
+      || await waitForElementByText('button', /continue|sign\s*up|submit|注册|创建|create/i, 5000).catch(() => null);
 
   if (submitBtn) {
     await humanPause(500, 1300);
     simulateClick(submitBtn);
-    log('Step 3: Form submitted');
+    log(`Step ${step}: Form submitted`);
   }
 }
 
@@ -456,12 +486,14 @@ function getSerializableRect(el) {
 }
 
 // ============================================================
-// Step 5: Fill Name & Birthday / Age
+// Step 4: Fill Name & Age
 // ============================================================
 
-async function step5_fillNameBirthday(payload) {
-  const { firstName, lastName, age, year, month, day } = payload;
-  if (!firstName || !lastName) throw new Error('No name data provided.');
+async function step4_fillNameAge(payload = {}) {
+  const { firstName, lastName, fullName, age, year, month, day } = payload;
+  const step = Number(payload.step || 4);
+  const resolvedFullName = (fullName || [firstName, lastName].filter(Boolean).join(' ')).trim();
+  if (!resolvedFullName) throw new Error('No name data provided.');
 
   const resolvedAge = age ?? (year ? new Date().getFullYear() - Number(year) : null);
   const hasBirthdayData = [year, month, day].every(value => value != null && !Number.isNaN(Number(value)));
@@ -469,8 +501,7 @@ async function step5_fillNameBirthday(payload) {
     throw new Error('No birthday or age data provided.');
   }
 
-  const fullName = `${firstName} ${lastName}`;
-  log(`Step 5: Filling name: ${fullName}`);
+  log(`Step ${step}: Filling name: ${resolvedFullName}`);
 
   // Actual DOM structure:
   // - Full name: <input name="name" placeholder="全名" type="text">
@@ -488,8 +519,8 @@ async function step5_fillNameBirthday(payload) {
     throw new Error('Could not find name input. URL: ' + location.href);
   }
   await humanPause(500, 1300);
-  fillInput(nameInput, fullName);
-  log(`Step 5: Name filled: ${fullName}`);
+  fillInput(nameInput, resolvedFullName);
+  log(`Step ${step}: Name filled: ${resolvedFullName}`);
 
   let birthdayMode = false;
   let ageInput = null;
@@ -522,7 +553,7 @@ async function step5_fillNameBirthday(payload) {
     const daySpinner = document.querySelector('[role="spinbutton"][data-type="day"]');
 
     if (yearSpinner && monthSpinner && daySpinner) {
-      log('Step 5: Birthday fields detected, filling birthday...');
+      log(`Step ${step}: Birthday fields detected, filling birthday...`);
 
       async function setSpinButton(el, value) {
         el.focus();
@@ -550,7 +581,7 @@ async function step5_fillNameBirthday(payload) {
       await setSpinButton(monthSpinner, String(month).padStart(2, '0'));
       await humanPause(250, 650);
       await setSpinButton(daySpinner, String(day).padStart(2, '0'));
-      log(`Step 5: Birthday filled: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+      log(`Step ${step}: Birthday filled: ${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
     }
 
     const hiddenBirthday = document.querySelector('input[name="birthday"]');
@@ -558,7 +589,7 @@ async function step5_fillNameBirthday(payload) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       hiddenBirthday.value = dateStr;
       hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
-      log(`Step 5: Hidden birthday input set: ${dateStr}`);
+      log(`Step ${step}: Hidden birthday input set: ${dateStr}`);
     }
   } else if (ageInput) {
     if (resolvedAge == null || Number.isNaN(Number(resolvedAge))) {
@@ -566,7 +597,7 @@ async function step5_fillNameBirthday(payload) {
     }
     await humanPause(500, 1300);
     fillInput(ageInput, String(resolvedAge));
-    log(`Step 5: Age filled: ${resolvedAge}`);
+    log(`Step ${step}: Age filled: ${resolvedAge}`);
 
     // Some age-mode pages still submit a hidden birthday field.
     // Keep it aligned with generated data so backend validation won't reject.
@@ -575,7 +606,7 @@ async function step5_fillNameBirthday(payload) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       hiddenBirthday.value = dateStr;
       hiddenBirthday.dispatchEvent(new Event('change', { bubbles: true }));
-      log(`Step 5: Hidden birthday input set (age mode): ${dateStr}`);
+      log(`Step ${step}: Hidden birthday input set (age mode): ${dateStr}`);
     }
   } else {
     throw new Error('Could not find birthday or age input. URL: ' + location.href);
@@ -602,7 +633,7 @@ async function step5_fillNameBirthday(payload) {
       consentCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
-    log('Step 5: Checked consent checkbox');
+    log(`Step ${step}: Checked consent checkbox`);
   }
 
   // Click "完成帐户创建" button
@@ -611,11 +642,11 @@ async function step5_fillNameBirthday(payload) {
     || await waitForElementByText('button', /完成|create|continue|finish|done|agree/i, 5000).catch(() => null);
 
   // Report complete BEFORE submit (page navigates to add-phone after this)
-  reportComplete(5);
+  reportComplete(step);
 
   if (completeBtn) {
     await humanPause(500, 1300);
     simulateClick(completeBtn);
-    log('Step 5: Clicked "完成帐户创建"');
+    log(`Step ${step}: Clicked "完成帐户创建"`);
   }
 }

@@ -8,6 +8,13 @@ const BURNER_CHALLENGE_REQUIRED_MESSAGE = 'Burner Mailbox security verification 
 const STOP_ERROR_MESSAGE = 'Flow stopped by user.';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
+const TOTAL_STEPS = 6;
+const CHATGPT_HOME_URL = 'https://chatgpt.com/';
+const CHATGPT_SESSION_URL = 'https://chatgpt.com/api/auth/session';
+const DEFAULT_ACCOUNT_PASSWORD = 'demonrain5233';
+const DEFAULT_FULL_NAME = '小林';
+const DEFAULT_AGE = 21;
+const MANUAL_CODE_STEPS = [3];
 
 initializeSessionStorageAccess();
 
@@ -19,14 +26,14 @@ const DEFAULT_STATE = {
   currentStep: 0,
   stepStatuses: {
     1: 'pending', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending',
-    6: 'pending', 7: 'pending', 8: 'pending', 9: 'pending',
+    6: 'pending',
   },
   autoRunning: false,
   autoRunCurrentRun: 0,
   autoRunTotalRuns: 1,
   oauthUrl: null,
   email: null,
-  mailMode: 'burner',
+  mailMode: 'manual',
   password: null,
   accounts: [], // { email, password, createdAt }
   lastEmailTimestamp: null,
@@ -39,11 +46,34 @@ const DEFAULT_STATE = {
   customPassword: '',
   manualVerificationCodes: {},
   pendingManualCodeStep: null,
+  sessionText: '',
+  checkoutUrl: '',
+  pendingCheckoutUrl: false,
 };
+
+function createPendingStepStatuses() {
+  const statuses = {};
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
+    statuses[step] = 'pending';
+  }
+  return statuses;
+}
+
+function normalizeStepStatuses(stepStatuses = {}) {
+  const normalized = createPendingStepStatuses();
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
+    if (stepStatuses[step]) normalized[step] = stepStatuses[step];
+  }
+  return normalized;
+}
 
 async function getState() {
   const state = await chrome.storage.session.get(null);
-  return { ...DEFAULT_STATE, ...state };
+  return {
+    ...DEFAULT_STATE,
+    ...state,
+    stepStatuses: normalizeStepStatuses(state.stepStatuses),
+  };
 }
 
 async function initializeSessionStorageAccess() {
@@ -138,7 +168,7 @@ async function resetState() {
     tabRegistry: prev.tabRegistry || {},
     vpsUrl: prev.vpsUrl || '',
     customPassword: prev.customPassword || '',
-    mailMode: prev.mailMode || 'burner',
+    mailMode: 'manual',
     manualVerificationCodes: {},
     pendingManualCodeStep: null,
   });
@@ -423,6 +453,38 @@ async function sendToContentScript(source, message) {
   return chrome.tabs.sendMessage(entry.tabId, message);
 }
 
+async function sendToContentScriptWithRetry(source, message, options = {}) {
+  const timeout = options.timeout || 60000;
+  const interval = options.interval || 1000;
+  const start = Date.now();
+  let lastError = null;
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+    try {
+      const response = await sendToContentScript(source, message);
+      if (response?.error) {
+        const err = new Error(response.error);
+        err.noRetry = true;
+        throw err;
+      }
+      if (response?.stopped) {
+        const err = new Error(response.error || STOP_ERROR_MESSAGE);
+        err.noRetry = true;
+        throw err;
+      }
+      return response;
+    } catch (err) {
+      if (isStopError(err)) throw err;
+      if (err?.noRetry) throw err;
+      lastError = err;
+      await sleepWithStop(interval);
+    }
+  }
+
+  throw lastError || new Error(`Timed out waiting for ${source} content script.`);
+}
+
 // ============================================================
 // Logging
 // ============================================================
@@ -485,10 +547,10 @@ async function humanStepDelay(min = HUMAN_STEP_DELAY_MIN, max = HUMAN_STEP_DELAY
 
 async function clickWithDebugger(tabId, rect) {
   if (!tabId) {
-    throw new Error('No auth tab found for debugger click.');
+    throw new Error('No tab found for debugger click.');
   }
   if (!rect || !Number.isFinite(rect.centerX) || !Number.isFinite(rect.centerY)) {
-    throw new Error('Step 8 debugger fallback needs a valid button position.');
+    throw new Error('Debugger click needs a valid button position.');
   }
 
   const target = { tabId };
@@ -496,8 +558,8 @@ async function clickWithDebugger(tabId, rect) {
     await chrome.debugger.attach(target, '1.3');
   } catch (err) {
     throw new Error(
-      `Debugger attach failed during step 8 fallback: ${err.message}. ` +
-      'If DevTools is open on the auth tab, close it and retry.'
+      `Debugger attach failed: ${err.message}. ` +
+      'If DevTools is open on the target tab, close it and retry.'
     );
   }
 
@@ -631,7 +693,7 @@ async function handleMessage(message, sender) {
       if (message.payload.email) {
         await setEmailState(message.payload.email);
       }
-      if (message.payload.manualCode && [4, 7].includes(Number(step))) {
+      if (message.payload.manualCode && MANUAL_CODE_STEPS.includes(Number(step))) {
         await saveManualVerificationCode(Number(step), message.payload.manualCode);
       }
       await executeStep(step);
@@ -640,7 +702,7 @@ async function handleMessage(message, sender) {
 
     case 'AUTO_RUN': {
       clearStopRequest();
-      const totalRuns = Number(message.payload?.totalRuns) || 1;
+      const totalRuns = 1;
       autoRunLoop(totalRuns, { resumeExisting: false, startStep: 1 });  // fire-and-forget
       return { ok: true };
     }
@@ -652,7 +714,7 @@ async function handleMessage(message, sender) {
       if (resumeStep === null) {
         return { error: 'No interrupted workflow to continue.' };
       }
-      const totalRuns = Math.max(1, Number(state.autoRunTotalRuns) || 1);
+      const totalRuns = 1;
       autoRunLoop(totalRuns, { resumeExisting: true, startStep: resumeStep });  // fire-and-forget
       return { ok: true };
     }
@@ -665,9 +727,12 @@ async function handleMessage(message, sender) {
       if (message.payload.manualCode) {
         const state = await getState();
         const step = Number(message.payload.step || state.pendingManualCodeStep || state.currentStep);
-        if ([4, 7].includes(step)) {
+        if (MANUAL_CODE_STEPS.includes(step)) {
           await saveManualVerificationCode(step, message.payload.manualCode);
         }
+      }
+      if (message.payload.checkoutUrl) {
+        await setState({ checkoutUrl: message.payload.checkoutUrl, pendingCheckoutUrl: false });
       }
       resumeAutoRun();  // fire-and-forget
       return { ok: true };
@@ -688,13 +753,28 @@ async function handleMessage(message, sender) {
       clearStopRequest();
       const state = await getState();
       const requestedStep = Number(message.payload.step || state.pendingManualCodeStep || state.currentStep);
-      const step = [4, 7].includes(requestedStep) ? requestedStep : 4;
+      const step = MANUAL_CODE_STEPS.includes(requestedStep) ? requestedStep : 3;
       const code = await saveManualVerificationCode(step, message.payload.code);
       await addLog(`Step ${step}: Manual verification code received`, 'ok');
       if (state.pendingManualCodeStep === step && autoRunResumeMode === 'manual_code') {
         resumeAutoRun();  // fire-and-forget
       }
       return { ok: true, step, code };
+    }
+
+    case 'SUBMIT_CHECKOUT_URL': {
+      clearStopRequest();
+      const checkoutUrl = normalizeUserUrl(message.payload?.url);
+      await setState({ checkoutUrl, pendingCheckoutUrl: false });
+      await addLog('Step 5: URL backfill received', 'ok');
+      if (checkoutUrlWaiter) {
+        checkoutUrlWaiter.resolve(checkoutUrl);
+        checkoutUrlWaiter = null;
+        autoRunResumeMode = null;
+      } else if (autoRunResumeMode === 'checkout_url') {
+        resumeAutoRun();  // fire-and-forget
+      }
+      return { ok: true, checkoutUrl };
     }
 
     // Side panel data updates
@@ -762,6 +842,7 @@ async function handleStepData(step, payload) {
 // Map of step -> { resolve, reject } for waiting on step completion
 const stepWaiters = new Map();
 let resumeWaiter = null;
+let checkoutUrlWaiter = null;
 
 function waitForStepComplete(step, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
@@ -821,11 +902,16 @@ async function requestStop() {
     resumeWaiter.reject(new Error(STOP_ERROR_MESSAGE));
     resumeWaiter = null;
   }
+  if (checkoutUrlWaiter) {
+    checkoutUrlWaiter.reject(new Error(STOP_ERROR_MESSAGE));
+    checkoutUrlWaiter = null;
+  }
+  await setState({ pendingCheckoutUrl: false });
   autoRunResumeMode = null;
 
   await markRunningStepsStopped();
   autoRunActive = false;
-  await setState({ autoRunning: false, pendingManualCodeStep: null });
+  await setState({ autoRunning: false, pendingManualCodeStep: null, pendingCheckoutUrl: false });
   chrome.runtime.sendMessage({
     type: 'AUTO_RUN_STATUS',
     payload: { phase: 'stopped', currentRun: autoRunCurrentRun, totalRuns: autoRunTotalRuns },
@@ -858,9 +944,6 @@ async function executeStep(step) {
       case 4: await executeStep4(state); break;
       case 5: await executeStep5(state); break;
       case 6: await executeStep6(state); break;
-      case 7: await executeStep7(state); break;
-      case 8: await executeStep8(state); break;
-      case 9: await executeStep9(state); break;
       default:
         throw new Error(`Unknown step: ${step}`);
     }
@@ -883,7 +966,7 @@ async function executeStep(step) {
  */
 async function executeStepAndWait(step, delayAfter = 2000) {
   throwIfStopped();
-  const waitTimeout = [4, 7].includes(step) ? 15 * 60 * 1000 : 120000;
+  const waitTimeout = [3, 5].includes(step) ? 30 * 60 * 1000 : 120000;
   const promise = waitForStepComplete(step, waitTimeout);
   await executeStep(step);
   await promise;
@@ -1223,19 +1306,14 @@ let autoRunTotalRuns = 1;
 function getAutoRunStepDelay(step) {
   switch (step) {
     case 1:
-    case 2:
       return 2000;
-    case 3:
-    case 5:
+    case 2:
+    case 4:
     case 6:
       return 3000;
-    case 4:
-    case 7:
+    case 3:
+    case 5:
       return 2000;
-    case 8:
-      return 2000;
-    case 9:
-      return 1000;
     default:
       return 2000;
   }
@@ -1244,7 +1322,7 @@ function getAutoRunStepDelay(step) {
 function getAutoResumeStep(state) {
   const statuses = state?.stepStatuses || {};
   const normalizedStatuses = {};
-  for (let step = 1; step <= 9; step++) {
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
     normalizedStatuses[step] = statuses[step] || 'pending';
   }
 
@@ -1256,7 +1334,7 @@ function getAutoResumeStep(state) {
     .map(([step]) => Number(step))
     .sort((a, b) => b - a)[0] || 0;
 
-  if (highestCompleted >= 9) {
+  if (highestCompleted >= TOTAL_STEPS) {
     return null;
   }
 
@@ -1270,7 +1348,7 @@ function getAutoResumeStep(state) {
     return currentStep;
   }
 
-  for (let step = 1; step <= 9; step++) {
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
     if (normalizedStatuses[step] !== 'completed') {
       return step;
     }
@@ -1282,9 +1360,10 @@ function getAutoResumeStep(state) {
 async function prepareStateForFreshAutoRun(run) {
   const prevState = await getState();
   const keepSettings = {
+    email: prevState.email || null,
     vpsUrl: prevState.vpsUrl,
     customPassword: prevState.customPassword,
-    mailMode: prevState.mailMode || 'burner',
+    mailMode: 'manual',
     autoRunning: true,
     autoRunCurrentRun: run,
     autoRunTotalRuns,
@@ -1301,48 +1380,7 @@ async function ensureAutoRunEmail(run, totalRuns) {
     return true;
   }
 
-  if (isManualMailMode(initialState)) {
-    await addLog(`=== Run ${run}/${totalRuns} PAUSED: Paste manual email, then continue ===`, 'warn');
-    autoRunResumeMode = 'email';
-    chrome.runtime.sendMessage({
-      type: 'AUTO_RUN_STATUS',
-      payload: { phase: 'waiting_email', currentRun: run, totalRuns },
-    }).catch(() => {});
-
-    await waitForResume();
-
-    const resumedState = await getState();
-    if (!resumedState.email) {
-      await addLog('Cannot resume: no email address.', 'error');
-      return false;
-    }
-
-    autoRunResumeMode = null;
-    return true;
-  }
-
-  let emailReady = false;
-
-  while (!emailReady) {
-    try {
-      const burnerEmail = await fetchBurnerEmail({ generateNew: true });
-      await addLog(`=== Run ${run}/${totalRuns} — Burner email ready: ${burnerEmail} ===`, 'ok');
-      emailReady = true;
-      autoRunResumeMode = null;
-    } catch (err) {
-      if (isBurnerChallengeError(err)) {
-        await waitForBurnerChallengeResolution(`Run ${run}/${totalRuns}`);
-        continue;
-      }
-
-      await addLog(`Burner Mailbox auto-fetch failed: ${err.message}`, 'warn');
-      break;
-    }
-  }
-
-  if (emailReady) return true;
-
-  await addLog(`=== Run ${run}/${totalRuns} PAUSED: Fetch Burner Mailbox email or paste manually, then continue ===`, 'warn');
+  await addLog(`=== Run ${run}/${totalRuns} PAUSED: Paste manual email, then continue ===`, 'warn');
   autoRunResumeMode = 'email';
   chrome.runtime.sendMessage({
     type: 'AUTO_RUN_STATUS',
@@ -1366,13 +1404,13 @@ async function runAutoSequence(run, totalRuns, startStep) {
   chrome.runtime.sendMessage(status('running')).catch(() => {});
 
   if (startStep <= 2) {
-    await addLog(`=== Auto Run ${run}/${totalRuns} — Phase 1: Get OAuth link & open signup ===`, 'info');
+    await addLog(`=== Auto Run ${run}/${totalRuns} — Phase 1: Open ChatGPT signup ===`, 'info');
   } else {
     await addLog(`=== Auto Run ${run}/${totalRuns} — Resuming from step ${startStep} ===`, 'info');
   }
 
-  for (let step = startStep; step <= 9; step++) {
-    if (step === 3) {
+  for (let step = startStep; step <= TOTAL_STEPS; step++) {
+    if (step === 2) {
       const stateBeforeEmail = await getState();
       if (!stateBeforeEmail.email) {
         const emailReady = await ensureAutoRunEmail(run, totalRuns);
@@ -1380,7 +1418,7 @@ async function runAutoSequence(run, totalRuns, startStep) {
           throw new Error('Cannot resume auto run: no email address.');
         }
       }
-      await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, login, complete ===`, 'info');
+      await addLog(`=== Run ${run}/${totalRuns} — Phase 2: Register, verify, fill profile, and prepare billing ===`, 'info');
       const signupTabId = await getTabId('signup-page');
       if (signupTabId) {
         await chrome.tabs.update(signupTabId, { active: true });
@@ -1433,7 +1471,10 @@ async function autoRunLoop(totalRuns, options = {}) {
         failedRun = run;
         await addLog(`Run ${run}/${totalRuns} failed: ${err.message}`, 'error');
       }
-      chrome.runtime.sendMessage(status('stopped')).catch(() => {});
+      chrome.runtime.sendMessage({
+        type: 'AUTO_RUN_STATUS',
+        payload: { phase: 'stopped', currentRun: successfulRuns, totalRuns: autoRunTotalRuns },
+      }).catch(() => {});
       break; // Stop on error
     }
   }
@@ -1458,6 +1499,7 @@ async function autoRunLoop(totalRuns, options = {}) {
     autoRunCurrentRun: autoRunCurrentRun,
     autoRunTotalRuns: autoRunTotalRuns,
     pendingManualCodeStep: null,
+    pendingCheckoutUrl: false,
   });
   clearStopRequest();
 }
@@ -1481,8 +1523,15 @@ async function resumeAutoRun() {
   if (autoRunResumeMode === 'manual_code') {
     const state = await getState();
     const step = Number(state.pendingManualCodeStep);
-    if (![4, 7].includes(step) || !normalizeManualVerificationCode(state.manualVerificationCodes?.[step])) {
+    if (!MANUAL_CODE_STEPS.includes(step) || !normalizeManualVerificationCode(state.manualVerificationCodes?.[step])) {
       await addLog('Cannot resume: no manual verification code has been submitted yet.', 'error');
+      return;
+    }
+  }
+  if (autoRunResumeMode === 'checkout_url') {
+    const state = await getState();
+    if (!state.checkoutUrl) {
+      await addLog('Cannot resume: no URL has been submitted yet.', 'error');
       return;
     }
   }
@@ -1523,73 +1572,367 @@ async function waitForManualVerificationCode(step) {
   return code;
 }
 
+async function probeSignupSurface(tabId) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && style.opacity !== '0'
+          && rect.width > 0
+          && rect.height > 0;
+      };
+      const emailInput = Array.from(document.querySelectorAll([
+        'input[type="email"]',
+        'input[name="email"]',
+        'input[name="username"]',
+        'input[id*="email" i]',
+        'input[placeholder*="email" i]',
+        'input[placeholder*="邮箱" i]',
+        'input[placeholder*="郵箱" i]',
+        'input[placeholder*="電郵" i]',
+      ].join(','))).find(isVisible);
+      const bodyText = (document.body?.innerText || document.body?.textContent || '').replace(/\s+/g, ' ').trim();
+      return {
+        url: location.href,
+        host: location.hostname,
+        ready: Boolean(emailInput),
+        authLike: /auth\.openai\.com|auth0\.openai\.com|accounts\.openai\.com/i.test(location.hostname)
+          || /signup|register|create-account/i.test(location.href)
+          || /email|邮箱|郵箱|電郵/.test(bodyText),
+      };
+    },
+  }).catch(() => null);
+
+  return result?.[0]?.result || null;
+}
+
+async function ensureSignupScriptInjected(tabId, source = 'signup-page') {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (injectedSource) => {
+      window.__MULTIPAGE_SOURCE = injectedSource;
+    },
+    args: [source],
+  }).catch(() => {});
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content/utils.js', 'content/signup-page.js'],
+  }).catch(() => {});
+  await sleepWithStop(700);
+}
+
+async function waitForSignupSurfaceAfterClick(timeout = 90000) {
+  const start = Date.now();
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    const signupTabId = await getTabId('signup-page');
+    if (signupTabId && await isTabAlive('signup-page')) {
+      await chrome.tabs.update(signupTabId, { active: true });
+      await setState({ signupSource: 'signup-page' });
+      return { source: 'signup-page', tabId: signupTabId };
+    }
+
+    const homeTabId = await getTabId('chatgpt-home');
+    if (homeTabId && await isTabAlive('chatgpt-home')) {
+      const probe = await probeSignupSurface(homeTabId);
+      if (probe?.ready) {
+        const source = /auth\.openai\.com|auth0\.openai\.com|accounts\.openai\.com/i.test(probe.host)
+          ? 'signup-page'
+          : 'chatgpt-home';
+        if (source === 'signup-page') {
+          await ensureSignupScriptInjected(homeTabId, 'signup-page');
+          await setState({ signupSource: 'signup-page' });
+          return { source: 'signup-page', tabId: homeTabId };
+        }
+        await setState({ signupSource: 'chatgpt-home' });
+        return { source: 'chatgpt-home', tabId: homeTabId };
+      }
+
+      if (probe?.authLike && /auth\.openai\.com|auth0\.openai\.com|accounts\.openai\.com/i.test(probe.host)) {
+        await ensureSignupScriptInjected(homeTabId, 'signup-page');
+      }
+    }
+
+    await sleepWithStop(700);
+  }
+
+  throw new Error('Step 1: Free signup was clicked, but the signup page/email field did not become ready.');
+}
+
+async function findFreeSignupButtonInTab(tabId, timeout = 60000) {
+  const start = Date.now();
+  let lastResult = null;
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    const probe = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && style.opacity !== '0'
+            && rect.width > 0
+            && rect.height > 0;
+        };
+        const pattern = /免费注册|註冊|注册|sign\s*up|register|create\s*account/i;
+        const candidates = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"]'));
+        const button = candidates.find((el) => {
+          if (!isVisible(el)) return false;
+          const text = normalizeText([
+            el.textContent,
+            el.getAttribute('aria-label'),
+            el.getAttribute('title'),
+            el.getAttribute('href'),
+          ].filter(Boolean).join(' '));
+          return pattern.test(text);
+        });
+
+        if (!button) {
+          return { found: false, url: location.href, title: document.title };
+        }
+
+        button.scrollIntoView({ block: 'center', inline: 'center' });
+        if (typeof button.focus === 'function') button.focus({ preventScroll: true });
+        const rect = button.getBoundingClientRect();
+        return {
+          found: true,
+          buttonText: normalizeText(button.textContent || button.getAttribute('aria-label') || ''),
+          href: button.href || button.getAttribute('href') || '',
+          url: location.href,
+          rect: {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+            centerX: rect.left + (rect.width / 2),
+            centerY: rect.top + (rect.height / 2),
+          },
+        };
+      },
+    }).catch((err) => {
+      lastResult = { error: err.message };
+      return null;
+    });
+
+    const result = probe?.[0]?.result;
+    if (result?.found) {
+      return result;
+    }
+    if (result) lastResult = result;
+    await sleepWithStop(500);
+  }
+
+  throw new Error(`Step 1: Could not find free signup button.${lastResult?.url ? ` Last URL: ${lastResult.url}` : ''}`);
+}
+
+async function clickFreeSignupInPage(tabId) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && style.opacity !== '0'
+          && rect.width > 0
+          && rect.height > 0;
+      };
+      const pattern = /免费注册|註冊|注册|sign\s*up|register|create\s*account/i;
+      const button = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"]')).find((el) => {
+        if (!isVisible(el)) return false;
+        const text = normalizeText([
+          el.textContent,
+          el.getAttribute('aria-label'),
+          el.getAttribute('title'),
+          el.getAttribute('href'),
+        ].filter(Boolean).join(' '));
+        return pattern.test(text);
+      });
+      if (!button) return { clicked: false, error: 'Free signup button disappeared before fallback click.' };
+      button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      if (typeof button.click === 'function') button.click();
+      return { clicked: true, buttonText: normalizeText(button.textContent || button.getAttribute('aria-label') || ''), url: location.href };
+    },
+  });
+
+  const clickResult = result?.[0]?.result;
+  if (!clickResult?.clicked) {
+    throw new Error(clickResult?.error || 'Fallback in-page click did not run.');
+  }
+  return clickResult;
+}
+
+async function getSignupAutomationSource(preferredSource = null) {
+  const candidates = [
+    'signup-page',
+    preferredSource,
+    'chatgpt-home',
+  ].filter(Boolean);
+
+  for (const source of candidates) {
+    const tabId = await getTabId(source);
+    if (tabId && await isTabAlive(source)) {
+      return { source, tabId };
+    }
+  }
+
+  throw new Error('Signup/auth page tab is not available.');
+}
+
+function normalizeUserUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    throw new Error('Please paste the URL before confirming.');
+  }
+
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(withProtocol);
+  } catch {
+    throw new Error('The pasted value is not a valid URL.');
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Only http or https URLs are supported.');
+  }
+
+  return parsed.href;
+}
+
+async function waitForCheckoutUrl() {
+  const existing = normalizeUserUrlOrEmpty((await getState()).checkoutUrl);
+  if (existing) return existing;
+
+  await setState({ pendingCheckoutUrl: true });
+  autoRunResumeMode = 'checkout_url';
+  chrome.runtime.sendMessage({
+    type: 'AUTO_RUN_STATUS',
+    payload: {
+      phase: 'waiting_checkout_url',
+      currentRun: Math.max(1, autoRunCurrentRun || 1),
+      totalRuns: Math.max(1, autoRunTotalRuns || 1),
+    },
+  }).catch(() => {});
+
+  const submittedUrl = await new Promise((resolve, reject) => {
+    throwIfStopped();
+    checkoutUrlWaiter = {
+      resolve,
+      reject,
+      createdAt: Date.now(),
+    };
+  });
+
+  const checkoutUrl = normalizeUserUrlOrEmpty(submittedUrl || (await getState()).checkoutUrl);
+  if (!checkoutUrl) {
+    throw new Error('Step 5: URL was not submitted.');
+  }
+
+  await setState({ checkoutUrl, pendingCheckoutUrl: false });
+  return checkoutUrl;
+}
+
+function normalizeUserUrlOrEmpty(value) {
+  try {
+    return value ? normalizeUserUrl(value) : '';
+  } catch {
+    return '';
+  }
+}
+
 // ============================================================
-// Step 1: Get OAuth Link (via vps-panel.js)
+// Step 1: Open ChatGPT and click free signup
 // ============================================================
 
 async function executeStep1(state) {
-  if (!state.vpsUrl) {
-    throw new Error('No VPS URL configured. Enter VPS address in Side Panel first.');
-  }
-  await addLog(`Step 1: Opening VPS panel...`);
-  await reuseOrCreateTab('vps-panel', state.vpsUrl, {
-    inject: ['content/utils.js', 'content/vps-panel.js'],
+  await addLog('Step 1: Opening ChatGPT home page...');
+  await clearTabRegistration('signup-page');
+  await clearTabRegistration('session-page');
+  await clearTabRegistration('billing-page');
+  const tabId = await reuseOrCreateTab('chatgpt-home', CHATGPT_HOME_URL, {
+    inject: ['content/utils.js', 'content/signup-page.js'],
+    injectSource: 'chatgpt-home',
     reloadIfSameUrl: true,
   });
 
-  await sendToContentScript('vps-panel', {
-    type: 'EXECUTE_STEP',
-    step: 1,
-    source: 'background',
-    payload: {},
-  });
+  await addLog('Step 1: Looking for ChatGPT free signup button...');
+  const clickTarget = await findFreeSignupButtonInTab(tabId, 60000);
+  await addLog(`Step 1: Found free signup button "${clickTarget.buttonText || clickTarget.href || 'unknown'}"; clicking now...`);
+  try {
+    await clickWithDebugger(tabId, clickTarget?.rect);
+    await addLog('Step 1: Debugger click dispatched to free signup button');
+  } catch (err) {
+    await addLog(`Step 1: Debugger click failed, falling back to in-page click: ${err.message}`, 'warn');
+    const fallbackResult = await clickFreeSignupInPage(tabId);
+    await addLog(`Step 1: Fallback in-page click dispatched (${fallbackResult.buttonText || 'button'})`);
+  }
+
+  await addLog('Step 1: Free signup click sent, waiting for signup page to load...');
+  const signupTarget = await waitForSignupSurfaceAfterClick(90000);
+  await addLog(`Step 1: Signup page ready on ${signupTarget.source}`, 'ok');
+  await setStepStatus(1, 'completed');
+  notifyStepComplete(1, signupTarget);
 }
 
 // ============================================================
-// Step 2: Open Signup Page (Background opens tab, signup-page.js clicks Register)
+// Step 2: Fill signup email and default password
 // ============================================================
 
 async function executeStep2(state) {
-  if (!state.oauthUrl) {
-    throw new Error('No OAuth URL. Complete step 1 first.');
-  }
-  await addLog(`Step 2: Opening auth URL...`);
-  await reuseOrCreateTab('signup-page', state.oauthUrl);
-
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 2,
-    source: 'background',
-    payload: {},
-  });
-}
-
-// ============================================================
-// Step 3: Fill Email & Password (via signup-page.js)
-// ============================================================
-
-async function executeStep3(state) {
-  if (!state.email) {
+  const latestState = await getState();
+  const email = latestState.email || state.email;
+  if (!email) {
     throw new Error('No email address. Paste email in Side Panel first.');
   }
 
-  const password = state.customPassword || generatePassword();
+  const password = DEFAULT_ACCOUNT_PASSWORD;
   await setPasswordState(password);
 
-  // Save account record
-  const accounts = state.accounts || [];
-  accounts.push({ email: state.email, password, createdAt: new Date().toISOString() });
-  await setState({ accounts });
+  const accounts = latestState.accounts || [];
+  accounts.push({ email, password, createdAt: new Date().toISOString() });
+  await setState({ accounts, mailMode: 'manual' });
 
-  await addLog(
-    `Step 3: Filling email ${state.email}, password ${state.customPassword ? 'customized' : 'generated'} (${password.length} chars)`
-  );
-  await sendToContentScript('signup-page', {
+  await addLog(`Step 2: Filling signup email ${email} with default password`);
+
+  const target = await getSignupAutomationSource(latestState.signupSource);
+  await chrome.tabs.update(target.tabId, { active: true });
+
+  await sendToContentScriptWithRetry(target.source, {
     type: 'EXECUTE_STEP',
-    step: 3,
+    step: 2,
     source: 'background',
-    payload: { email: state.email, password },
-  });
+    payload: { email, password },
+  }, { timeout: 90000, interval: 1200 });
+}
+
+// ============================================================
+// Step 3: Wait for manual signup verification code
+// ============================================================
+
+async function executeStep3(state) {
+  const code = await waitForManualVerificationCode(3);
+  await fillVerificationCodeOnAuthPage(3, code);
 }
 
 // ============================================================
@@ -1728,21 +2071,109 @@ async function pollVerificationCodeWithRetry(step, state, options) {
 }
 
 async function fillVerificationCodeOnAuthPage(step, code) {
-  const signupTabId = await getTabId('signup-page');
-  if (signupTabId) {
-    await chrome.tabs.update(signupTabId, { active: true });
-    await sendToContentScript('signup-page', {
-      type: 'FILL_CODE',
-      step,
-      source: 'background',
-      payload: { code },
-    });
-  } else {
-    throw new Error('Auth page tab was closed. Cannot fill verification code.');
-  }
+  const state = await getState();
+  const target = await getSignupAutomationSource(state.signupSource);
+  await chrome.tabs.update(target.tabId, { active: true });
+  await sendToContentScriptWithRetry(target.source, {
+    type: 'FILL_CODE',
+    step,
+    source: 'background',
+    payload: { code },
+  }, { timeout: 90000, interval: 1200 });
 }
 
+// ============================================================
+// Step 4: Fill About You
+// ============================================================
+
 async function executeStep4(state) {
+  await addLog(`Step 4: Filling default profile: ${DEFAULT_FULL_NAME}, age ${DEFAULT_AGE}`);
+  const latestState = await getState();
+  const target = await getSignupAutomationSource(latestState.signupSource);
+  await chrome.tabs.update(target.tabId, { active: true });
+  await sendToContentScriptWithRetry(target.source, {
+    type: 'EXECUTE_STEP',
+    step: 4,
+    source: 'background',
+    payload: { fullName: DEFAULT_FULL_NAME, age: DEFAULT_AGE, step: 4 },
+  }, { timeout: 90000, interval: 1200 });
+}
+
+// ============================================================
+// Step 5: Copy ChatGPT session text and wait for URL backfill
+// ============================================================
+
+async function executeStep5(state) {
+  await addLog('Step 5: Opening ChatGPT session API page...');
+  await clearTabRegistration('session-page');
+  await reuseOrCreateTab('session-page', CHATGPT_SESSION_URL, {
+    inject: ['content/utils.js', 'content/session-page.js'],
+    injectSource: 'session-page',
+    reloadIfSameUrl: true,
+  });
+
+  const sessionResult = await sendToContentScriptWithRetry('session-page', {
+    type: 'COPY_SESSION_TEXT',
+    source: 'background',
+    payload: {},
+  }, { timeout: 60000, interval: 1000 });
+
+  if (sessionResult?.error) {
+    throw new Error(sessionResult.error);
+  }
+
+  const sessionText = sessionResult?.text || '';
+  await setState({ sessionText, checkoutUrl: '', pendingCheckoutUrl: true });
+  await addLog(`Step 5: Session text copied to clipboard (${sessionText.length} chars). Waiting for URL backfill...`, 'ok');
+
+  chrome.runtime.sendMessage({
+    type: 'SESSION_TEXT_COPIED',
+    payload: { length: sessionText.length },
+  }).catch(() => {});
+
+  const checkoutUrl = await waitForCheckoutUrl();
+  await addLog(`Step 5: URL ready: ${checkoutUrl}`, 'ok');
+  await setStepStatus(5, 'completed');
+  notifyStepComplete(5, { checkoutUrl });
+}
+
+// ============================================================
+// Step 6: Open URL and prefill billing fields
+// ============================================================
+
+async function executeStep6(state) {
+  const latestState = await getState();
+  const checkoutUrl = normalizeUserUrl(latestState.checkoutUrl || state.checkoutUrl);
+  const email = latestState.email || state.email;
+  if (!email) {
+    throw new Error('No email address available for billing prefill.');
+  }
+
+  await addLog(`Step 6: Opening submitted URL in a new tab: ${checkoutUrl}`);
+  await clearTabRegistration('billing-page');
+  await reuseOrCreateTab('billing-page', checkoutUrl, {
+    inject: ['content/utils.js', 'content/billing-page.js'],
+    injectSource: 'billing-page',
+  });
+
+  await sendToContentScriptWithRetry('billing-page', {
+    type: 'EXECUTE_STEP',
+    step: 6,
+    source: 'background',
+    payload: {
+      email,
+      name: DEFAULT_FULL_NAME,
+      country: 'TW',
+      countryLabel: 'Taiwan',
+      postalCode: '100',
+      county: 'Taipei City',
+      district: '1',
+      addressLine1: '1',
+    },
+  }, { timeout: 90000, interval: 1200 });
+}
+
+async function executeLegacyStep4(state) {
   if (isManualMailMode(state)) {
     const code = await waitForManualVerificationCode(4);
     await fillVerificationCodeOnAuthPage(4, code);
@@ -1776,7 +2207,7 @@ async function executeStep4(state) {
 // Step 5: Fill Name & Birthday (via signup-page.js)
 // ============================================================
 
-async function executeStep5(state) {
+async function executeLegacyStep5(state) {
   const { firstName, lastName } = generateRandomName();
   const { year, month, day } = generateRandomBirthday();
 
@@ -1794,7 +2225,7 @@ async function executeStep5(state) {
 // Step 6: Login ChatGPT (Background opens tab, chatgpt.js handles login)
 // ============================================================
 
-async function executeStep6(state) {
+async function executeLegacyStep6(state) {
   if (!state.oauthUrl) {
     throw new Error('No OAuth URL. Complete step 1 first.');
   }

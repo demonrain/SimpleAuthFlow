@@ -35,8 +35,13 @@ const btnClearLog = document.getElementById('btn-clear-log');
 const inputVpsUrl = document.getElementById('input-vps-url');
 const inputRunCount = document.getElementById('input-run-count');
 const btnTheme = document.getElementById('btn-theme');
+const urlBackfillPanel = document.getElementById('url-backfill-panel');
+const inputUrlBackfill = document.getElementById('input-url-backfill');
+const btnSubmitUrl = document.getElementById('btn-submit-url');
 
 const DEFAULT_VPS_URL = 'http://127.0.0.1:5173/#/oauth';
+const TOTAL_STEPS = 6;
+const MANUAL_CODE_STEPS = [3];
 const LANG_STORAGE_KEY = 'demonrainregflow-language';
 const THEME_STORAGE_KEY = 'demonrainregflow-theme';
 const PLAY_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
@@ -56,6 +61,7 @@ const I18N = {
     show: 'Show',
     hide: 'Hide',
     submitCode: 'Submit',
+    confirmUrl: 'Confirm',
     waiting: 'Waiting...',
     ready: 'Ready',
     workflow: 'Workflow',
@@ -69,9 +75,11 @@ const I18N = {
     labelCallback: 'Callback',
     mailModeBurner: 'Burner Mailbox',
     mailModeManual: 'Manual Email',
-    emailPlaceholder: 'Auto fetch from Burner Mailbox or paste manually',
+    emailPlaceholder: 'Paste the registration email',
     passwordPlaceholder: 'Leave blank to auto-generate',
     manualCodePlaceholder: 'Enter verification code',
+    urlBackfillTitle: 'Session text copied. Paste the returned URL below.',
+    urlBackfillPlaceholder: 'Paste the URL here, then confirm',
     runCountTitle: 'Number of runs',
     autoRunTitle: 'Run all steps automatically',
     stopTitle: 'Stop current flow',
@@ -83,12 +91,12 @@ const I18N = {
     clearLogTitle: 'Clear log',
     showVpsTitle: 'Show VPS URL',
     hideVpsTitle: 'Hide VPS URL',
-    step1: 'Get OAuth Link',
-    step2: 'Open Signup',
-    step3: 'Fill Email / Password',
-    step4: 'Get Signup Code',
-    step5: 'Fill Name / Birthday',
-    step6: 'Login via OAuth',
+    step1: 'Open ChatGPT Signup',
+    step2: 'Fill Email / Password',
+    step3: 'Submit Verification Code',
+    step4: 'Fill About You',
+    step5: 'Copy Session / Paste URL',
+    step6: 'Prefill Billing',
     step7: 'Get Login Code',
     step8: 'OAuth Auto Confirm',
     step9: 'VPS Verify',
@@ -99,14 +107,18 @@ const I18N = {
     allDone: 'All steps completed!',
     running: 'Running',
     paused: 'Paused',
-    emailWaitHint: 'Use Auto to fetch a Burner Mailbox email, or paste manually, then continue',
-    manualEmailWaitHint: 'Paste a manual email address, then continue',
+    emailWaitHint: 'Paste the registration email, then continue',
+    manualEmailWaitHint: 'Paste the registration email, then continue',
     challengeWaitHint: 'Complete Burner Mailbox security verification on the mailbox tab, then continue',
-    manualCodeWaitHint: 'Enter the Step {step} verification code, then continue',
-    needEmail: 'Please paste an email address or use Auto first',
+    manualCodeWaitHint: 'Enter the verification code, then continue',
+    checkoutUrlWaitHint: 'Session text was copied. Paste the returned URL below, then confirm',
+    needEmail: 'Please paste an email address first',
     needBurnerEmail: 'Please fetch or paste a Burner Mailbox email first',
     needManualCode: 'Please enter a 6-digit verification code',
+    needCheckoutUrl: 'Please paste a valid URL',
     manualCodeSaved: 'Verification code submitted',
+    checkoutUrlSaved: 'URL submitted',
+    sessionTextCopied: 'Session text copied to clipboard',
     stopping: 'Stopping current flow...',
     resetConfirm: 'Reset all steps and data?',
     burnerChallengeConfirm: 'Burner Mailbox needs security verification.\n\nComplete it on the mailbox tab, then click OK to continue fetching the email.',
@@ -121,6 +133,7 @@ const I18N = {
     show: '显示',
     hide: '隐藏',
     submitCode: '提交',
+    confirmUrl: '确认',
     waiting: '等待中...',
     ready: '就绪',
     workflow: '流程',
@@ -134,9 +147,11 @@ const I18N = {
     labelCallback: '回调',
     mailModeBurner: 'Burner 邮箱',
     mailModeManual: '手动邮箱',
-    emailPlaceholder: '自动获取 Burner 邮箱，或手动粘贴邮箱',
+    emailPlaceholder: '粘贴注册邮箱',
     passwordPlaceholder: '留空则自动生成账号密码',
     manualCodePlaceholder: '输入验证码',
+    urlBackfillTitle: 'Session 文本已复制，请在下面回填返回的 URL',
+    urlBackfillPlaceholder: '在这里粘贴 URL，然后点击确认',
     runCountTitle: '运行次数',
     autoRunTitle: '自动运行全部步骤',
     stopTitle: '停止当前流程',
@@ -148,12 +163,12 @@ const I18N = {
     clearLogTitle: '清空日志',
     showVpsTitle: '显示 VPS 地址',
     hideVpsTitle: '隐藏 VPS 地址',
-    step1: '获取 OAuth 链接',
-    step2: '打开注册页',
-    step3: '填写邮箱 / 密码',
-    step4: '获取注册验证码',
-    step5: '填写姓名 / 生日',
-    step6: 'OAuth 登录',
+    step1: '打开 ChatGPT 注册',
+    step2: '填写邮箱 / 密码',
+    step3: '提交验证码',
+    step4: '填写资料',
+    step5: '复制 Session / 回填 URL',
+    step6: '预填账单信息',
     step7: '获取登录验证码',
     step8: 'OAuth 自动确认',
     step9: 'VPS 验证',
@@ -164,14 +179,18 @@ const I18N = {
     allDone: '全部步骤已完成！',
     running: '运行中',
     paused: '已暂停',
-    emailWaitHint: '使用自动获取 Burner 邮箱，或手动粘贴邮箱后继续',
-    manualEmailWaitHint: '粘贴手动邮箱后继续',
+    emailWaitHint: '粘贴注册邮箱后继续',
+    manualEmailWaitHint: '粘贴注册邮箱后继续',
     challengeWaitHint: '请先在邮箱标签页完成 Burner Mailbox 安全验证，然后继续',
-    manualCodeWaitHint: '输入步骤 {step} 的验证码后继续',
-    needEmail: '请先粘贴邮箱，或使用自动获取',
+    manualCodeWaitHint: '输入验证码后继续',
+    checkoutUrlWaitHint: 'Session 文本已复制，请在下方粘贴返回的 URL 并确认',
+    needEmail: '请先粘贴邮箱',
     needBurnerEmail: '请先获取或粘贴 Burner 邮箱',
     needManualCode: '请输入 6 位验证码',
+    needCheckoutUrl: '请粘贴有效 URL',
     manualCodeSaved: '验证码已提交',
+    checkoutUrlSaved: 'URL 已提交',
+    sessionTextCopied: 'Session 文本已复制到剪切板',
     stopping: '正在停止当前流程...',
     resetConfirm: '重置全部步骤和数据？',
     burnerChallengeConfirm: 'Burner Mailbox 需要先完成安全验证。\n\n请切到邮箱页完成验证，完成后点确定，我会继续获取邮箱。',
@@ -297,13 +316,20 @@ async function restoreState() {
   try {
     const state = await chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' });
 
-    inputMailMode.value = state.mailMode || 'burner';
+    inputMailMode.value = 'manual';
     pendingManualCodeStep = state.pendingManualCodeStep || null;
     if (pendingManualCodeStep) {
       inputManualCode.value = state.manualVerificationCodes?.[pendingManualCodeStep] || '';
       autoContinueMode = 'manual_code';
       autoContinueBar.style.display = 'flex';
       autoContinueHint.textContent = t('manualCodeWaitHint', { step: pendingManualCodeStep });
+    }
+    if (state.pendingCheckoutUrl) {
+      autoContinueMode = 'checkout_url';
+      autoContinueBar.style.display = 'flex';
+      autoContinueHint.textContent = t('checkoutUrlWaitHint');
+      urlBackfillPanel.style.display = 'flex';
+      inputUrlBackfill.value = state.checkoutUrl || '';
     }
 
     if (state.oauthUrl) {
@@ -356,7 +382,7 @@ function updateProgressCounter() {
   document.querySelectorAll('.step-row').forEach((row) => {
     if (row.classList.contains('completed')) completed++;
   });
-  stepsProgress.textContent = `${completed} / 9`;
+  stepsProgress.textContent = `${completed} / ${TOTAL_STEPS}`;
 }
 
 function updateButtonStates() {
@@ -371,7 +397,7 @@ function updateButtonStates() {
   });
 
   const anyRunning = Object.values(statuses).some((status) => status === 'running');
-  for (let step = 1; step <= 9; step++) {
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
     const btn = document.querySelector(`.step-btn[data-step="${step}"]`);
     if (btn) btn.disabled = anyRunning;
   }
@@ -382,7 +408,7 @@ function updateButtonStates() {
 
 function getResumableStepFromStatuses(statuses, currentStep = null) {
   const normalized = {};
-  for (let step = 1; step <= 9; step++) {
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
     normalized[step] = statuses[step] || 'pending';
   }
 
@@ -394,7 +420,7 @@ function getResumableStepFromStatuses(statuses, currentStep = null) {
     .map(([step]) => Number(step))
     .sort((a, b) => b - a)[0] || 0;
 
-  if (highestCompleted >= 9) return null;
+  if (highestCompleted >= TOTAL_STEPS) return null;
   if (highestCompleted > 0) return highestCompleted + 1;
 
   const resolvedCurrentStep = Number(currentStep) || 0;
@@ -402,7 +428,7 @@ function getResumableStepFromStatuses(statuses, currentStep = null) {
     return resolvedCurrentStep;
   }
 
-  for (let step = 1; step <= 9; step++) {
+  for (let step = 1; step <= TOTAL_STEPS; step++) {
     if (normalized[step] !== 'completed') return step;
   }
 
@@ -452,7 +478,7 @@ function updateStatusDisplay(state) {
     .map(([step]) => Number(step))
     .sort((a, b) => b - a)[0];
 
-  if (lastCompleted === 9) {
+  if (lastCompleted === TOTAL_STEPS) {
     displayStatus.textContent = t('allDone');
     statusBar.classList.add('completed');
   } else if (lastCompleted) {
@@ -487,7 +513,7 @@ async function syncPanelInputsToState() {
   const email = inputEmail.value.trim();
   const vpsUrl = inputVpsUrl.value.trim();
   const customPassword = inputPassword.value;
-  const mailMode = inputMailMode.value || 'burner';
+  const mailMode = 'manual';
 
   if (email) {
     await chrome.runtime.sendMessage({ type: 'SAVE_EMAIL', source: 'sidepanel', payload: { email } });
@@ -556,8 +582,8 @@ async function submitManualCode(step = null) {
   }
 
   const state = await chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' }).catch(() => ({}));
-  const activeStep = Number(state.pendingManualCodeStep || pendingManualCodeStep || state.currentStep || step || 4);
-  const targetStep = [4, 7].includes(activeStep) ? activeStep : 4;
+  const activeStep = Number(state.pendingManualCodeStep || pendingManualCodeStep || state.currentStep || step || 3);
+  const targetStep = MANUAL_CODE_STEPS.includes(activeStep) ? activeStep : 3;
 
   const response = await chrome.runtime.sendMessage({
     type: 'SUBMIT_MANUAL_CODE',
@@ -580,13 +606,46 @@ async function submitManualCode(step = null) {
   return true;
 }
 
+function normalizeUrlInput(value) {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+}
+
+async function submitCheckoutUrl() {
+  const url = normalizeUrlInput(inputUrlBackfill.value);
+  if (!url) {
+    showToast(t('needCheckoutUrl'), 'warn');
+    return false;
+  }
+
+  const response = await chrome.runtime.sendMessage({
+    type: 'SUBMIT_CHECKOUT_URL',
+    source: 'sidepanel',
+    payload: { url },
+  });
+
+  if (response?.error) {
+    showToast(response.error, 'error');
+    return false;
+  }
+
+  inputUrlBackfill.value = response.checkoutUrl || url;
+  urlBackfillPanel.style.display = 'none';
+  autoContinueBar.style.display = 'none';
+  autoContinueMode = 'email';
+  showToast(t('checkoutUrlSaved'), 'success', 1800);
+  updateMailModeUI();
+  return true;
+}
+
 document.querySelectorAll('.step-btn').forEach((btn) => {
   btn.addEventListener('click', async () => {
     const step = Number(btn.dataset.step);
     await syncPanelInputsToState();
 
     const payload = { step };
-    if (step === 3) {
+    if (step === 2) {
       const email = inputEmail.value.trim();
       if (!email) {
         showToast(t('needEmail'), 'warn');
@@ -595,7 +654,7 @@ document.querySelectorAll('.step-btn').forEach((btn) => {
       payload.email = email;
     }
 
-    if ([4, 7].includes(step) && inputMailMode.value === 'manual') {
+    if (MANUAL_CODE_STEPS.includes(step)) {
       const code = normalizeManualCode(inputManualCode.value);
       if (code.length === 6) {
         payload.manualCode = code;
@@ -612,6 +671,10 @@ btnFetchEmail.addEventListener('click', async () => {
 
 btnSubmitCode.addEventListener('click', async () => {
   await submitManualCode();
+});
+
+btnSubmitUrl.addEventListener('click', async () => {
+  await submitCheckoutUrl();
 });
 
 btnTogglePassword.addEventListener('click', () => {
@@ -634,7 +697,7 @@ btnStop.addEventListener('click', async () => {
 });
 
 btnAutoRun.addEventListener('click', async () => {
-  const totalRuns = parseInt(inputRunCount.value, 10) || 1;
+  const totalRuns = 1;
   await syncPanelInputsToState();
   btnAutoRun.disabled = true;
   btnWorkflowContinue.disabled = true;
@@ -666,10 +729,15 @@ btnAutoContinue.addEventListener('click', async () => {
     return;
   }
 
+  if (autoContinueMode === 'checkout_url') {
+    await submitCheckoutUrl();
+    return;
+  }
+
   if (autoContinueMode === 'email') {
     const email = inputEmail.value.trim();
     if (!email) {
-      showToast(inputMailMode.value === 'manual' ? t('needEmail') : t('needBurnerEmail'), 'warn');
+      showToast(t('needEmail'), 'warn');
       return;
     }
     await syncPanelInputsToState();
@@ -694,6 +762,7 @@ btnReset.addEventListener('click', async () => {
   displayLocalhostUrl.classList.remove('has-value');
   inputEmail.value = '';
   inputManualCode.value = '';
+  inputUrlBackfill.value = '';
   pendingManualCodeStep = null;
   inputVpsUrl.value = DEFAULT_VPS_URL;
   displayStatus.textContent = t('ready');
@@ -705,6 +774,7 @@ btnReset.addEventListener('click', async () => {
   inputRunCount.disabled = false;
   setAutoButtonIdle();
   autoContinueBar.style.display = 'none';
+  urlBackfillPanel.style.display = 'none';
   autoContinueMode = 'email';
   updateMailModeUI();
   updateStopButtonState(false);
@@ -798,8 +868,8 @@ chrome.runtime.onMessage.addListener((message) => {
       displayOauthUrl.classList.remove('has-value');
       displayLocalhostUrl.textContent = t('waiting');
       displayLocalhostUrl.classList.remove('has-value');
-      inputEmail.value = '';
       inputManualCode.value = '';
+      inputUrlBackfill.value = '';
       pendingManualCodeStep = null;
       displayStatus.textContent = t('ready');
       statusBar.className = 'status-bar';
@@ -809,6 +879,7 @@ chrome.runtime.onMessage.addListener((message) => {
       updateStopButtonState(false);
       autoContinueMode = 'email';
       autoContinueHint.textContent = inputMailMode.value === 'manual' ? t('manualEmailWaitHint') : t('emailWaitHint');
+      urlBackfillPanel.style.display = 'none';
       updateMailModeUI();
       updateProgressCounter();
       btnWorkflowContinue.disabled = true;
@@ -831,6 +902,11 @@ chrome.runtime.onMessage.addListener((message) => {
       }
       break;
 
+    case 'SESSION_TEXT_COPIED':
+      showToast(t('sessionTextCopied'), 'success', 2600);
+      urlBackfillPanel.style.display = 'flex';
+      break;
+
     case 'AUTO_RUN_STATUS': {
       const { phase, currentRun, totalRuns, step } = message.payload;
       const runLabel = getRunLabel(currentRun, totalRuns);
@@ -839,6 +915,7 @@ chrome.runtime.onMessage.addListener((message) => {
           autoContinueBar.style.display = 'flex';
           autoContinueMode = 'email';
           pendingManualCodeStep = null;
+          urlBackfillPanel.style.display = 'none';
           autoContinueHint.textContent = inputMailMode.value === 'manual' ? t('manualEmailWaitHint') : t('emailWaitHint');
           setAutoButtonBusy(`${t('paused')}${runLabel}`);
           btnWorkflowContinue.disabled = true;
@@ -859,12 +936,24 @@ chrome.runtime.onMessage.addListener((message) => {
           autoContinueBar.style.display = 'flex';
           autoContinueMode = 'manual_code';
           pendingManualCodeStep = Number(step) || null;
+          urlBackfillPanel.style.display = 'none';
           autoContinueHint.textContent = t('manualCodeWaitHint', { step: pendingManualCodeStep || '' });
           setAutoButtonBusy(`${t('paused')}${runLabel}`);
           btnWorkflowContinue.disabled = true;
           updateStopButtonState(true);
           updateMailModeUI({ pendingManualCodeStep });
           inputManualCode.focus();
+          break;
+        case 'waiting_checkout_url':
+          autoContinueBar.style.display = 'flex';
+          autoContinueMode = 'checkout_url';
+          pendingManualCodeStep = null;
+          autoContinueHint.textContent = t('checkoutUrlWaitHint');
+          urlBackfillPanel.style.display = 'flex';
+          setAutoButtonBusy(`${t('paused')}${runLabel}`);
+          btnWorkflowContinue.disabled = true;
+          updateStopButtonState(true);
+          inputUrlBackfill.focus();
           break;
         case 'running':
           setAutoButtonBusy(`${t('running')}${runLabel}`);
@@ -877,6 +966,7 @@ chrome.runtime.onMessage.addListener((message) => {
           inputRunCount.disabled = false;
           setAutoButtonIdle();
           autoContinueBar.style.display = 'none';
+          urlBackfillPanel.style.display = 'none';
           autoContinueMode = 'email';
           pendingManualCodeStep = null;
           autoContinueHint.textContent = inputMailMode.value === 'manual' ? t('manualEmailWaitHint') : t('emailWaitHint');

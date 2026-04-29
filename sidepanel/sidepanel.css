@@ -279,6 +279,10 @@ header {
   gap: 8px;
 }
 
+.is-hidden-flow {
+  display: none !important;
+}
+
 .data-inline {
   display: flex;
   align-items: center;
@@ -331,6 +335,13 @@ header {
 }
 .data-input::placeholder { color: var(--text-muted); }
 .data-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+
+.data-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 104px;
+  line-height: 1.5;
+}
 
 #btn-fetch-email {
   padding-inline: 10px;
@@ -420,6 +431,24 @@ header {
 }
 .auto-continue-bar svg { color: var(--orange); flex-shrink: 0; }
 .auto-hint { font-size: 13px; color: var(--orange); flex: 1; font-weight: 500; }
+
+.url-backfill-panel {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.url-backfill-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
 
 /* ============================================================
    Steps Section
